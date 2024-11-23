@@ -8,6 +8,8 @@ use std::{
     sync::Arc,
 };
 
+use xattr::XAttrs;
+
 use {
     crossbeam_deque::{Stealer, Worker as Deque},
     same_file::Handle,
@@ -21,6 +23,8 @@ use crate::{
     types::Types,
     Error, PartialErrorBuilder,
 };
+
+type XAttr = Vec<u8>;
 
 /// A directory entry with a possible error attached.
 ///
@@ -59,6 +63,16 @@ impl DirEntry {
     /// Return the metadata for the file that this entry points to.
     pub fn metadata(&self) -> Result<Metadata, Error> {
         self.dent.metadata()
+    }
+
+    /// Return the list of extended attributes for the file that this entry points to.
+    pub fn xattrs(&self) -> Result<XAttrs, Error> {
+        self.dent.xattrs()
+    }
+
+    /// Return the value extended attribute <name> for the file that this entry points to.
+    pub fn xattr(&self, name: &OsStr) -> Result<Option<XAttr>, Error> {
+        self.dent.xattr(name)
     }
 
     /// Return the file type for the file that this entry points to.
@@ -185,6 +199,40 @@ impl DirEntryInner {
         }
     }
 
+    fn xattrs(&self) -> Result<XAttrs, Error> {
+        use self::DirEntryInner::*;
+        match *self {
+            Stdin => {
+                let err = Error::Io(io::Error::new(
+                    io::ErrorKind::Other,
+                    "<stdin> has no xattrs",
+                ));
+                Err(err.with_path("<stdin>"))
+            }
+            Walkdir(ref x) => x.xattrs().map_err(|err| {
+                Error::Io(io::Error::from(err)).with_path(x.path())
+            }),
+            Raw(ref x) => x.xattrs(),
+        }
+    }
+
+    fn xattr(&self, name: &OsStr) -> Result<Option<XAttr>, Error> {
+        use self::DirEntryInner::*;
+        match *self {
+            Stdin => {
+                let err = Error::Io(io::Error::new(
+                    io::ErrorKind::Other,
+                    "<stdin> has no xattrs",
+                ));
+                Err(err.with_path("<stdin>"))
+            }
+            Walkdir(ref x) => x.xattr(name).map_err(|err| {
+                Error::Io(io::Error::from(err)).with_path(x.path())
+            }),
+            Raw(ref x) => x.xattr(name),
+        }
+    }
+
     fn file_type(&self) -> Option<FileType> {
         use self::DirEntryInner::*;
         match *self {
@@ -298,6 +346,24 @@ impl DirEntryRaw {
             fs::metadata(&self.path)
         } else {
             fs::symlink_metadata(&self.path)
+        }
+        .map_err(|err| Error::Io(io::Error::from(err)).with_path(&self.path))
+    }
+
+    fn xattrs(&self) -> Result<XAttrs, Error> {
+        if self.follow_link {
+            xattr::list_deref(&self.path)
+        } else {
+            xattr::list(&self.path)
+        }
+        .map_err(|err| Error::Io(io::Error::from(err)).with_path(&self.path))
+    }
+
+    fn xattr(&self, name: &OsStr) -> Result<Option<XAttr>, Error> {
+        if self.follow_link {
+            xattr::get_deref(&self.path, name)
+        } else {
+            xattr::get(&self.path, name)
         }
         .map_err(|err| Error::Io(io::Error::from(err)).with_path(&self.path))
     }
